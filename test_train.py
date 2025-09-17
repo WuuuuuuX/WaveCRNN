@@ -5,7 +5,11 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 import torch.nn.functional as F
-from torch.cuda.amp import GradScaler, autocast
+from torch.cuda.amp import GradScaler
+try:
+    from torch.amp import autocast
+except ImportError:
+    from torch.cuda.amp import autocast
 import os
 import time
 from pathlib import Path
@@ -61,6 +65,9 @@ def train_model():
     # Initialize student model
     student_model = StudentModel(num_classes=len(class_to_idx), embed_dim=768).to(device)
     
+    # Enable mixed precision compatibility
+    student_model.enable_mixed_precision()
+    
     # Load teacher model (DINOv2 Base)
     teacher_model = get_dinov2_model('dinov2_vitb14')
     if teacher_model is None:
@@ -75,6 +82,11 @@ def train_model():
     # Initialize feature adapter (student dim to teacher dim)
     # DINOv2 base has 768 dim, our student has 768 dim, so identity adapter
     feature_adapter = FeatureAdapter(768, 768).to(device)
+    
+    # Ensure feature adapter is also mixed precision compatible
+    for param in feature_adapter.parameters():
+        if param is not None:
+            param.data = param.data.float()
     
     # Loss function
     criterion = HeterogeneousKnowledgeDistillationLoss(
@@ -95,7 +107,7 @@ def train_model():
     scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=num_epochs)
     
     # Mixed precision training scaler
-    scaler = GradScaler()
+    scaler = GradScaler('cuda') if torch.cuda.is_available() else GradScaler()
     
     # Training loop
     best_val_acc = 0.0
@@ -125,7 +137,7 @@ def train_model():
             optimizer.zero_grad()
             
             # Forward pass with mixed precision
-            with autocast():
+            with autocast('cuda', enabled=torch.cuda.is_available()):
                 # Student forward pass
                 student_logits, student_features = student_model(images)
                 
@@ -135,6 +147,10 @@ def train_model():
                     # For simplicity, we'll use the patch tokens (without cls token)
                     intermediate_layers = teacher_model.get_intermediate_layers(images, n=1)
                     teacher_features = intermediate_layers[0][:, 1:]  # Remove cls token
+                    
+                    # Ensure teacher features are in the correct dtype for mixed precision
+                    if torch.cuda.is_available() and images.device.type == 'cuda':
+                        teacher_features = teacher_features.half()
                     
                     # Resize teacher features to match student features if needed
                     if teacher_features.shape[1] != student_features.shape[1]:

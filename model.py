@@ -42,6 +42,21 @@ class LightweightViT(nn.Module):
         elif isinstance(m, nn.LayerNorm):
             nn.init.constant_(m.bias, 0)
             nn.init.constant_(m.weight, 1.0)
+        elif isinstance(m, nn.Conv2d):
+            nn.init.kaiming_normal_(m.weight, mode='fan_out', nonlinearity='relu')
+            if m.bias is not None:
+                nn.init.constant_(m.bias, 0)
+    
+    def enable_mixed_precision(self):
+        """Ensure model parameters are compatible with mixed precision training"""
+        # Convert certain parameters to ensure compatibility
+        for module in self.modules():
+            if isinstance(module, (nn.LayerNorm, nn.Linear)):
+                # Ensure biases are initialized properly
+                if hasattr(module, 'bias') and module.bias is not None:
+                    module.bias.data = module.bias.data.float()
+                if hasattr(module, 'weight') and module.weight is not None:
+                    module.weight.data = module.weight.data.float()
             
     def forward_features(self, x):
         # Patch embedding
@@ -178,6 +193,16 @@ class StudentModel(nn.Module):
         sequence_features = torch.mean(patch_features, dim=1)  # (batch_size, num_patches, feature_dim)
         
         return combined_output, sequence_features
+    
+    def enable_mixed_precision(self):
+        """Ensure model parameters are compatible with mixed precision training"""
+        self.vit.enable_mixed_precision()
+        # Also apply to LSTM components
+        for module in self.lstm.modules():
+            if isinstance(module, (nn.LayerNorm, nn.Linear, nn.LSTM)):
+                for param_name, param in module.named_parameters():
+                    if param is not None:
+                        param.data = param.data.float()
 
 
 def get_dinov2_model(model_name='dinov2_vitb14'):
